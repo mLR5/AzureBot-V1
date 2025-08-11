@@ -1,0 +1,16 @@
+# Mac OS
+.DS_Store
+
+# Azure Function local settings
+local.settings.json
+
+# Fichiers zip temporaires
+*.zip
+
+# Environnements locaux
+.env
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
