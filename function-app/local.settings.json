@@ -1,0 +1,9 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AZURE_OPENAI_API_KEY": "EyuJEMUbAXBHF0IT5SMgtPx4hTCZo47uU9OHc2KDagtUChO8H7wSJQQJ99BGACYeBjFXJ3w3AAABACOGjBIG",
+    "AZURE_OPENAI_ENDPOINT": "https://openai-agent-ia.openai.azure.com"
+  }
+}
