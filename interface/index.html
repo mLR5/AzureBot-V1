@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AzureBot Web</title>
+  <script src="https://cdn.botframework.com/botframework-webchat/latest/webchat.js"></script>
+  <style>
+    html,body{height:100%;margin:0;background:#0f172a}
+    #wrap{display:flex;flex-direction:column;height:100%}
+    header{color:#fff;padding:8px 12px;font:600 14px/1.4 ui-sans-serif}
+    #webchat{flex:1;max-width:900px;margin:0 auto 16px auto;background:#111827;border-radius:16px}
+    .status{color:#94a3b8;font:500 12px/1.4 ui-sans-serif;padding:0 12px 8px}
+  </style>
+</head>
+<body>
+<div id="wrap">
+  <header>🧠 AzureBot — interface web</header>
+  <div class="status" id="status">Connexion en cours…</div>
+  <div id="webchat" role="main"></div>
+</div>
+
+<script>
+(async function () {
+  const status = document.getElementById('status');
+  const TOKEN_URL = 'https://func-agent-ia-atced9dyergaeqe5.canadacentral-01.azurewebsites.net/api/token';
+
+  try {
+    const res = await fetch(TOKEN_URL, { method: 'GET' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const { token } = await res.json();
+
+    status.textContent = 'Connecté à Direct Line.';
+    const dl = window.WebChat.createDirectLine({ token });
+
+    window.WebChat.renderWebChat(
+      {
+        directLine: dl,
+        locale: 'fr-FR',
+        userID: 'web-' + Math.random().toString(36).slice(2),
+        styleOptions: { bubbleBorderRadius: 10, hideUploadButton: true }
+      },
+      document.getElementById('webchat')
+    );
+  } catch (e) {
+    console.error(e);
+    status.textContent = '❌ Erreur pour obtenir le token (voir console).';
+  }
+})();
+</script>
+</body>
+</html>
