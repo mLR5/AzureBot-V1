@@ -1,7 +1,7 @@
 import os, json, secrets, requests, azure.functions as func
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    # 1) Récupère le secret
+        # 1) Récupère le secret
     secret = os.getenv("DIRECT_LINE_SECRET")
     if not secret:
         return func.HttpResponse(
@@ -20,7 +20,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             pass
     if not user_id:
         user_id = f"web_{secrets.token_hex(8)}"
-
     # 3) Appel Direct Line (⚠️ clés en minuscules dans le payload)
     r = requests.post(
         "https://directline.botframework.com/v3/directline/tokens/generate",
@@ -28,6 +27,5 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         json={"user": {"id": user_id}},
         timeout=10
     )
-
     # 4) Retourne tel quel la réponse JSON de Direct Line
     return func.HttpResponse(r.text, status_code=r.status_code, mimetype="application/json")
