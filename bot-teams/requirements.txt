@@ -2,3 +2,5 @@ gunicorn
 botbuilder-core
 aiohttp
 requests
+botbuilder-schema
+azure-identity

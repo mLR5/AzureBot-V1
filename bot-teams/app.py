@@ -5,7 +5,7 @@ from aiohttp import web
 from botbuilder.core import (
     BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext, ActivityHandler
 )
-from botbuilder.schema import Activity   # <-- AJOUT
+from botbuilder.schema import Activity
 import requests
 
 # --- Logging de base ---
@@ -15,12 +15,19 @@ log = logging.getLogger("bot-app")
 # --- Config ---
 APP_ID = os.getenv("MicrosoftAppId")
 APP_PASSWORD = os.getenv("MicrosoftAppPassword")
+
+# Appel texte → ta function “chat” existante
 FUNCTION_APP_URL = os.getenv("FUNCTION_APP_URL")
+
+# AJOUT : Appel analyse → ta function /api/analyze protégée par une function key
+ANALYZE_URL = os.getenv("ANALYZE_URL")
 
 if not APP_ID or not APP_PASSWORD:
     log.warning("MicrosoftAppId/MicrosoftAppPassword non définis. L’auth Bot échouera.")
 if not FUNCTION_APP_URL:
-    log.warning("FUNCTION_APP_URL non défini. Les appels backend échoueront.")
+    log.warning("FUNCTION_APP_URL non défini. Les appels backend (chat) échoueront.")
+if not ANALYZE_URL:
+    log.warning("ANALYZE_URL non défini. L'analyse de fichiers échouera.")
 
 # --- Adapter + gestion d'erreurs globales ---
 adapter_settings = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
@@ -38,6 +45,7 @@ adapter.on_turn_error = on_error
 # --- Bot ---
 class TeamsSimpleBot(ActivityHandler):
     async def on_message_activity(self, turn_context: TurnContext):
+        """Flux texte classique : envoie le message à ta Function (chat) et renvoie la réponse."""
         user_message = (turn_context.activity.text or "").strip()
         log.info("Message utilisateur: %s", user_message)
 
@@ -52,10 +60,50 @@ class TeamsSimpleBot(ActivityHandler):
             resp.raise_for_status()
             response = resp.json().get("response", "Aucune réponse du modèle.")
         except Exception as e:
-            log.exception("Erreur lors de l'appel backend: %s", e)
+            log.exception("Erreur lors de l'appel backend (chat): %s", e)
             response = f"Erreur backend : {e}"
 
         await turn_context.send_activity(response)
+
+    # AJOUT : handler des events (fichiers envoyés depuis l'interface web)
+    async def on_event_activity(self, turn_context: TurnContext):
+        """
+        Reçoit l'event 'files_uploaded' envoyé par le front (Direct Line),
+        appelle /api/analyze, et poste le résultat dans la conversation.
+        """
+        if turn_context.activity.name == "files_uploaded":
+            payload = turn_context.activity.value or {}
+            blobs = payload.get("blobs", [])  # attendu: [{ blobUrl, contentType }]
+
+            if not blobs:
+                await turn_context.send_activity("Aucun fichier reçu.")
+                return
+
+            if not ANALYZE_URL:
+                await turn_context.send_activity("Configuration manquante: ANALYZE_URL.")
+                return
+
+            # Petit message d'état
+            try:
+                await turn_context.send_activity(f"🔎 Analyse de {len(blobs)} fichier(s) en cours…")
+            except Exception:
+                pass
+
+            try:
+                r = requests.post(ANALYZE_URL, json={"blobs": blobs}, timeout=120)
+                if r.ok:
+                    data = r.json()
+                    parts = []
+                    for i, res in enumerate(data.get("results", []), 1):
+                        kind = (res.get("type") or "doc")
+                        text = (res.get("text") or "")[:2000]  # borne de sécurité
+                        parts.append(f"— Document {i} ({kind}):\n{text}")
+                    await turn_context.send_activity("\n\n".join(parts) or "Aucun résultat.")
+                else:
+                    await turn_context.send_activity(f"❌ Erreur analyze {r.status_code}")
+            except Exception as e:
+                logging.exception("Erreur analyze: %s", e)
+                await turn_context.send_activity(f"❌ Exception analyze: {e}")
 
 bot = TeamsSimpleBot()
 
@@ -110,10 +158,10 @@ async def messages(req: web.Request) -> web.Response:
                 content_type="text/plain",
             )
 
-        # >>> CHANGEMENT ICI : on désérialise en Activity puis on appelle l'adapter
+        # Désérialise en Activity puis passe la main à l'adapter
         activity = Activity().deserialize(body_obj)
+        # IMPORTANT : on passe bot.on_turn → ActivityHandler routéra vers on_message_activity / on_event_activity automatiquement
         invoke_response = await adapter.process_activity(activity, auth_header, bot.on_turn)
-        # <<<
 
         if invoke_response:
             text = str(invoke_response.body) if invoke_response.body else ""
