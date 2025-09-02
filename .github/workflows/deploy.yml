@@ -1,0 +1,82 @@
+# .github/workflows/deploy-dev.yml
+name: Deploy AzureBot (dev)
+
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      RESOURCE_GROUP:  ${{ vars.RESOURCE_GROUP }}    
+      FUNC_APP_NAME:   ${{ vars.FUNCTION_APP_NAME }}
+      BOT_APP_NAME:    ${{ vars.BOT_APP_NAME }}
+      STORAGE_ACCOUNT: ${{ vars.STORAGE_ACCOUNT }}
+      STATIC_CONTAINER: '$web'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Azure login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Verify resources exist in RG
+      run: |
+        echo "RG: $RESOURCE_GROUP"
+        az resource show -g "$RESOURCE_GROUP" -n "$FUNC_APP_NAME" --resource-type "Microsoft.Web/sites" >/dev/null
+        az resource show -g "$RESOURCE_GROUP" -n "$BOT_APP_NAME"  --resource-type "Microsoft.Web/sites" >/dev/null
+        az storage account show -g "$RESOURCE_GROUP" -n "$STORAGE_ACCOUNT" >/dev/null
+        echo "Resources found."
+
+    # -------- Function App --------
+    - name: Install Function deps
+      working-directory: function-app
+      run: |
+        pip install -r requirements.txt --target .python_packages/lib/site-packages
+
+    - name: Deploy Function App
+      uses: azure/functions-action@v1
+      with:
+        app-name: ${{ env.FUNC_APP_NAME }}
+        package: function-app
+
+    # -------- Bot Teams --------
+    - name: Package bot
+      working-directory: bot-teams
+      run: |
+        pip install -r requirements.txt --target .
+        zip -r ../bot.zip .
+
+    - name: Deploy bot to Web App
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.BOT_APP_NAME }}
+        package: bot.zip
+
+    # -------- Interface Web (Static Website) --------
+    - name: Upload static site to $web
+      run: |
+        # (facultatif) définir le RG par défaut pour les prochains 'az' :
+        az configure --defaults group=$RESOURCE_GROUP
+
+        # activer le site statique si besoin
+        az storage blob service-properties update \
+          --account-name ${{ env.STORAGE_ACCOUNT }} \
+          --static-website \
+          --index-document index.html \
+          --404-document 404.html
+
+        # publier le dossier interface/ vers $web
+        az storage blob upload-batch \
+          --account-name ${{ env.STORAGE_ACCOUNT }} \
+          --auth-mode login \
+          -s interface \
+          -d ${{ env.STATIC_CONTAINER }}
