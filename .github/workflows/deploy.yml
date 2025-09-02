@@ -10,7 +10,7 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     env:
-      RESOURCE_GROUP:  ${{ vars.RESOURCE_GROUP }}    
+      RESOURCE_GROUP:  ${{ vars.RESOURCE_GROUP }}
       FUNC_APP_NAME:   ${{ vars.FUNCTION_APP_NAME }}
       BOT_APP_NAME:    ${{ vars.BOT_APP_NAME }}
       STORAGE_ACCOUNT: ${{ vars.STORAGE_ACCOUNT }}
@@ -48,33 +48,31 @@ jobs:
         app-name: ${{ env.FUNC_APP_NAME }}
         package: function-app
 
-    # -------- Bot Teams --------
-    - name: Package bot
-      working-directory: bot-teams
+    # -------- Bot Teams (Oryx build côté Azure) --------
+    # Imposer la commande de démarrage aiohttp + gunicorn (idempotent)
+    - name: Ensure Startup Command for Bot
       run: |
-        pip install -r requirements.txt --target .
-        zip -r ../bot.zip .
+        az webapp config set \
+          -g "$RESOURCE_GROUP" -n "$BOT_APP_NAME" \
+          --startup-file 'gunicorn --bind=0.0.0.0:$PORT --timeout 600 --worker-class aiohttp.GunicornWebWorker app:app'
 
-    - name: Deploy bot to Web App
+    # Déployer le dossier (pas de zip); Oryx installera les deps compatibles (GLIBC ok)
+    - name: Deploy bot to Web App (let Oryx build)
       uses: azure/webapps-deploy@v2
       with:
         app-name: ${{ env.BOT_APP_NAME }}
-        package: bot.zip
+        package: bot-teams
+        enable-oryx-build: true
 
     # -------- Interface Web (Static Website) --------
     - name: Upload static site to $web
       run: |
-        # (facultatif) définir le RG par défaut pour les prochains 'az' :
         az configure --defaults group=$RESOURCE_GROUP
-
-        # activer le site statique si besoin
         az storage blob service-properties update \
           --account-name ${{ env.STORAGE_ACCOUNT }} \
           --static-website \
           --index-document index.html \
           --404-document 404.html
-
-        # publier le dossier interface/ vers $web
         az storage blob upload-batch \
           --account-name ${{ env.STORAGE_ACCOUNT }} \
           --auth-mode login \
