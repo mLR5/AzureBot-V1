@@ -14,7 +14,7 @@ jobs:
       FUNC_APP_NAME:   ${{ vars.FUNCTION_APP_NAME }}
       BOT_APP_NAME:    ${{ vars.BOT_APP_NAME }}
       STORAGE_ACCOUNT: ${{ vars.STORAGE_ACCOUNT }}
-      STATIC_CONTAINER: '$web'
+      STATIC_CONTAINER: '\$web'
 
     steps:
     - uses: actions/checkout@v4
