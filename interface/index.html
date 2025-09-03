@@ -12,23 +12,13 @@
     header a{color:#60a5fa;margin-left:12px;text-decoration:none}
     #webchat{flex:1;max-width:900px;margin:0 auto 8px;background:#111827;border-radius:16px}
     .status{color:#94a3b8;font:500 12px/1.4 ui-sans-serif;padding:0 12px 8px}
-    .bar{max-width:900px;margin:8px auto;padding:8px;color:#cbd5e1;font:500 13px ui-sans-serif}
-    .bar button{padding:6px 10px;border-radius:10px;border:0;cursor:pointer}
-    .bar input[type=file]{margin-right:8px}
   </style>
 </head>
 <body>
 <div id="wrap">
     <header>🧠 AzureBot — interface web</header>
   <div class="status" id="status">Connexion en cours…</div>
-
-  <!-- Barre d’upload -->
-  <div class="bar">
-    <input id="filepick" type="file" multiple accept="application/pdf,image/*" />
-    <button id="sendFiles">Analyser</button>
-    <span id="upStatus"></span>
-  </div>
-
+  <div class="status" id="upStatus"></div>
   <div id="webchat" role="main"></div>
 </div>
 
@@ -44,89 +34,93 @@
   // Identifiant user pour tracer les blobs (coté serveur)
   const userID = 'web-' + Math.random().toString(36).slice(2);
 
+  let dl;
+  let store;
+
+  async function uploadAndSend(files) {
+    const fileList = Array.from(files || []);
+    if (!fileList.length) return;
+
+    const allowed = ['application/pdf','image/png','image/jpeg','image/jpg','image/webp'];
+    for (const f of fileList) {
+      if (!allowed.some(a => f.type === a || (a === 'application/pdf' && f.name.toLowerCase().endsWith('.pdf')))) {
+        upStatus.textContent = `Type non supporté: ${f.name}`;
+        return;
+      }
+      if (f.size > 25 * 1024 * 1024) {
+        upStatus.textContent = `Fichier trop volumineux (>25 Mo): ${f.name}`;
+        return;
+      }
+    }
+
+    upStatus.textContent = 'Préparation des SAS…';
+
+    const sasResp = await fetch(SAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId: userID,
+        files: fileList.map(f => ({ filename: f.name, contentType: f.type }))
+      })
+    });
+    if (!sasResp.ok) { upStatus.textContent = '❌ Erreur SAS'; return; }
+    const sas = await sasResp.json();
+
+    const blobs = [];
+    for (let i = 0; i < sas.uploads.length; i++) {
+      const f = fileList[i];
+      const u = sas.uploads[i];
+      upStatus.textContent = `Upload ${i+1}/${fileList.length}…`;
+
+      const put = await fetch(u.putUrl, {
+        method: 'PUT',
+        headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': f.type || 'application/octet-stream' },
+        body: f
+      });
+      if (!put.ok) { upStatus.textContent = `❌ Upload échoué: ${f.name}`; return; }
+
+      blobs.push({ blobUrl: u.blobUrl, contentType: f.type });
+    }
+
+    dl.postActivity({
+      type: 'event',
+      name: 'files_uploaded',
+      from: { id: userID },
+      value: { blobs }
+    }).subscribe({
+      next: () => { upStatus.textContent = 'Fichiers envoyés pour analyse.'; },
+      error: (e) => { console.error(e); upStatus.textContent = '❌ Envoi event échoué.'; }
+    });
+
+    store.dispatch({ type: 'WEB_CHAT/SET_SEND_BOX', payload: { attachments: [] } });
+  }
+
   try {
-    // 1) Récupère le token Direct Line
     const res = await fetch(TOKEN_URL, { method: 'GET' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const { token } = await res.json();
     status.textContent = 'Connecté à Direct Line.';
 
-    // 2) Crée Direct Line + rend Web Chat
-    const dl = window.WebChat.createDirectLine({ token });
+    store = window.WebChat.createStore({}, ({ dispatch }) => next => action => {
+      if (action.type === 'WEB_CHAT/SEND_FILES') {
+        uploadAndSend(action.payload.files);
+        return;
+      }
+      return next(action);
+    });
+
+    dl = window.WebChat.createDirectLine({ token });
+
     window.WebChat.renderWebChat(
       {
         directLine: dl,
         locale: 'fr-FR',
         userID,
-        styleOptions: { bubbleBorderRadius: 10, hideUploadButton: true }
+        store,
+        styleOptions: { bubbleBorderRadius: 10 }
       },
       document.getElementById('webchat')
     );
-
-    // 3) Upload puis event → bot
-    async function uploadAndSend() {
-      const input = document.getElementById('filepick');
-      const files = Array.from(input.files || []);
-      if (!files.length) return;
-
-      // Optionnel : petite validation locale
-      const allowed = ['application/pdf','image/png','image/jpeg','image/jpg','image/webp'];
-      for (const f of files) {
-        if (!allowed.some(a => f.type === a || (a === 'application/pdf' && f.name.toLowerCase().endsWith('.pdf')))) {
-          upStatus.textContent = `Type non supporté: ${f.name}`;
-          return;
-        }
-        if (f.size > 25 * 1024 * 1024) { // 25 Mo max
-          upStatus.textContent = `Fichier trop volumineux (>25 Mo): ${f.name}`;
-          return;
-        }
-      }
-
-      upStatus.textContent = 'Préparation des SAS…';
-
-      // a) Demande des SAS d’upload (User Delegation SAS côté serveur)
-      const sasResp = await fetch(SAS_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: userID,
-          files: files.map(f => ({ filename: f.name, contentType: f.type }))
-        })
-      });
-      if (!sasResp.ok) { upStatus.textContent = '❌ Erreur SAS'; return; }
-      const sas = await sasResp.json();
-
-      // b) PUT chaque fichier vers Blob
-      const blobs = [];
-      for (let i = 0; i < sas.uploads.length; i++) {
-        const f = files[i];
-        const u = sas.uploads[i];
-        upStatus.textContent = `Upload ${i+1}/${files.length}…`;
-
-        const put = await fetch(u.putUrl, {
-          method: 'PUT',
-          headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': f.type || 'application/octet-stream' },
-          body: f
-        });
-        if (!put.ok) { upStatus.textContent = `❌ Upload échoué: ${f.name}`; return; }
-
-        // On n’envoie QUE l’URL blob privée (sans SAS de lecture) + contentType
-        blobs.push({ blobUrl: u.blobUrl, contentType: f.type });
-      }
-
-      // c) Envoi d’un event au bot (il appellera /api/analyze)
-      dl.postActivity({
-        type: 'event',
-        name: 'files_uploaded',
-        from: { id: userID },
-        value: { blobs }   // => [{ blobUrl, contentType }]
-      }).subscribe({
-        next: () => { upStatus.textContent = 'Fichiers envoyés pour analyse.'; },
-        error: (e) => { console.error(e); upStatus.textContent = '❌ Envoi event échoué.'; }
-      });
-    }
-
-    document.getElementById('sendFiles').addEventListener('click', uploadAndSend);
 
   } catch (e) {
     console.error(e);
