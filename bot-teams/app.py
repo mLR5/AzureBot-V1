@@ -101,9 +101,6 @@ class TeamsSimpleBot(ActivityHandler):
                             kind = (res.get("type") or "doc")
                             summary = (res.get("summary") or "")[:2000]  # borne de sécurité
                             await turn_context.send_activity(f"— Document {i} ({kind}):\n{summary}")
-                            text = (res.get("text") or "")
-                            if text:
-                                await turn_context.send_activity(text[:2000])
                 else:
                     await turn_context.send_activity(f"❌ Erreur analyze {r.status_code}")
             except Exception as e:
