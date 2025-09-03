@@ -49,14 +49,12 @@ jobs:
         package: function-app
 
     # -------- Bot Teams (Oryx build côté Azure) --------
-    # Imposer la commande de démarrage aiohttp + gunicorn (idempotent)
     - name: Ensure Startup Command for Bot
       run: |
         az webapp config set \
           -g "$RESOURCE_GROUP" -n "$BOT_APP_NAME" \
           --startup-file 'gunicorn --bind=0.0.0.0:$PORT --timeout 600 --worker-class aiohttp.GunicornWebWorker app:app'
 
-    # Déployer le dossier (pas de zip); Oryx installera les deps compatibles (GLIBC ok)
     - name: Deploy bot to Web App (let Oryx build)
       uses: azure/webapps-deploy@v2
       with:
@@ -65,7 +63,7 @@ jobs:
         enable-oryx-build: true
 
     # -------- Interface Web (Static Website) --------
-    - name: Upload static site to $web
+    - name: Enable static website (idempotent)
       run: |
         az configure --defaults group=$RESOURCE_GROUP
         az storage blob service-properties update \
@@ -73,8 +71,23 @@ jobs:
           --static-website \
           --index-document index.html \
           --404-document 404.html
-        az storage blob upload-batch \
+
+    # sync
+    - name: Sync static site to $web
+      run: |
+        az storage blob sync \
           --account-name ${{ env.STORAGE_ACCOUNT }} \
           --auth-mode login \
-          -s interface \
-          -d ${{ env.STATIC_CONTAINER }}
+          --source interface \
+          --container ${{ env.STATIC_CONTAINER }} \
+          --delete-destination true
+
+    # desactive cache navigateur
+    - name: Set no-cache on index.html
+      run: |
+        az storage blob update \
+          --account-name ${{ env.STORAGE_ACCOUNT }} \
+          --container-name ${{ env.STATIC_CONTAINER }} \
+          --name index.html \
+          --content-cache-control "no-cache, no-store, must-revalidate" \
+          >/dev/null || true
