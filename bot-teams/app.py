@@ -93,12 +93,17 @@ class TeamsSimpleBot(ActivityHandler):
                 r = requests.post(ANALYZE_URL, json={"blobs": blobs}, timeout=120)
                 if r.ok:
                     data = r.json()
-                    parts = []
-                    for i, res in enumerate(data.get("results", []), 1):
-                        kind = (res.get("type") or "doc")
-                        text = (res.get("text") or "")[:2000]  # borne de sécurité
-                        parts.append(f"— Document {i} ({kind}):\n{text}")
-                    await turn_context.send_activity("\n\n".join(parts) or "Aucun résultat.")
+                    results = data.get("results", [])
+                    if not results:
+                        await turn_context.send_activity("Aucun résultat.")
+                    else:
+                        for i, res in enumerate(results, 1):
+                            kind = (res.get("type") or "doc")
+                            summary = (res.get("summary") or "")[:2000]  # borne de sécurité
+                            await turn_context.send_activity(f"— Document {i} ({kind}):\n{summary}")
+                            text = (res.get("text") or "")
+                            if text:
+                                await turn_context.send_activity(text[:2000])
                 else:
                     await turn_context.send_activity(f"❌ Erreur analyze {r.status_code}")
             except Exception as e:
