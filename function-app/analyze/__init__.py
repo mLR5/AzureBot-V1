@@ -43,7 +43,18 @@ def _analyze_pdf(pdf_bytes: bytes) -> dict:
             if p.content:
                 paras.append(p.content.strip())
     text = "\n".join(paras)[:20000]
-    return {"type": "pdf", "text": text}
+    # Résumé via Azure OpenAI (texte tronqué pour éviter les dépassements)
+    text_for_model = text[:2000]
+    messages = [
+        {"role": "system", "content": "Tu es un assistant qui résume des documents en français."},
+        {
+            "role": "user",
+            "content": f"Texte du PDF:\n{text_for_model}\n\nFais un résumé structuré (points clés, chiffres, alertes).",
+        },
+    ]
+    resp = client.chat.completions.create(model=DEPLOYMENT_NAME, messages=messages, temperature=0.2)
+    summary = resp.choices[0].message.content.strip()
+    return {"type": "pdf", "text": text, "summary": summary}
 
 def _analyze_image(img_bytes: bytes, content_type: str) -> dict:
     # On envoie l'image en data URL (base64) au modèle vision
@@ -72,9 +83,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             if ct == "application/pdf" or blob_url.lower().endswith(".pdf"):
                 outputs.append(_analyze_pdf(raw))
             elif ct.startswith("image/"):
-                outputs.append(_analyze_image(raw, ct))
+                img_res = _analyze_image(raw, ct)
+                outputs.append({**img_res, "summary": img_res.get("text")})
             else:
-                outputs.append({"type": "unknown", "text": "Type non supporté."})
+                outputs.append({"type": "unknown", "text": "Type non supporté.", "summary": "Type non supporté."})
 
         return func.HttpResponse(json.dumps({"results": outputs}), mimetype="application/json")
     except Exception as e:
