@@ -49,7 +49,7 @@ class TeamsSimpleBot(ActivityHandler):
         user_message = (turn_context.activity.text or "").strip()
         log.info("Message utilisateur: %s", user_message)
 
-        if not user_message:
+        if not user_message and not turn_context.activity.attachments:
             await turn_context.send_activity("Aucun texte reçu.")
             return
 
