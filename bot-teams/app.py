@@ -12,6 +12,9 @@ import requests
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bot-app")
 
+# Mémoire simple pour stocker un message utilisateur en attente d'analyse de fichiers
+pending_user_messages = {}
+
 # --- Config ---
 APP_ID = os.getenv("MicrosoftAppId")
 APP_PASSWORD = os.getenv("MicrosoftAppPassword")
@@ -48,8 +51,15 @@ class TeamsSimpleBot(ActivityHandler):
         """Flux texte classique : envoie le message à ta Function (chat) et renvoie la réponse."""
         user_message = (turn_context.activity.text or "").strip()
         log.info("Message utilisateur: %s", user_message)
+        attachments = turn_context.activity.attachments or []
 
-        if not user_message and not turn_context.activity.attachments:
+        if attachments:
+            # On conserve le texte pour l'utiliser après l'analyse des fichiers
+            conv_id = turn_context.activity.conversation.id
+            pending_user_messages[conv_id] = user_message
+            return
+
+        if not user_message:
             await turn_context.send_activity("Aucun texte reçu.")
             return
 
@@ -78,6 +88,7 @@ class TeamsSimpleBot(ActivityHandler):
         if turn_context.activity.name == "files_uploaded":
             payload = turn_context.activity.value or {}
             blobs = payload.get("blobs", [])  # attendu: [{ blobUrl, contentType }]
+            user_text = payload.get("userText")
 
             if not blobs:
                 await turn_context.send_activity("Aucun fichier reçu.")
@@ -87,6 +98,13 @@ class TeamsSimpleBot(ActivityHandler):
                 await turn_context.send_activity("Configuration manquante: ANALYZE_URL.")
                 return
 
+            # Récupère le texte éventuellement stocké lors du message initial
+            conv_id = turn_context.activity.conversation.id
+            if not user_text:
+                user_text = pending_user_messages.pop(conv_id, "")
+            else:
+                pending_user_messages.pop(conv_id, None)
+
             # Petit message d'état
             try:
                 await turn_context.send_activity(f"🔎 Analyse de {len(blobs)} fichier(s) en cours…")
@@ -95,18 +113,31 @@ class TeamsSimpleBot(ActivityHandler):
 
             try:
                 r = requests.post(ANALYZE_URL, json={"blobs": blobs}, timeout=120)
-                if r.ok:
-                    data = r.json()
-                    results = data.get("results", [])
-                    if not results:
-                        await turn_context.send_activity("Aucun résultat.")
-                    else:
-                        for i, res in enumerate(results, 1):
-                            kind = (res.get("type") or "doc")
-                            summary = (res.get("summary") or "")[:2000]  # borne de sécurité
-                            await turn_context.send_activity(f"— Document {i} ({kind}):\n{summary}")
-                else:
-                    await turn_context.send_activity(f"❌ Erreur analyze {r.status_code}")
+                r.raise_for_status()
+                data = r.json()
+                results = data.get("results", [])
+
+                # Concatène les résumés
+                summaries = []
+                for i, res in enumerate(results, 1):
+                    kind = (res.get("type") or "doc")
+                    summary = (res.get("summary") or "")[:2000]
+                    summaries.append(f"Document {i} ({kind}): {summary}")
+
+                combined = user_text.strip()
+                if summaries:
+                    combined = (combined + "\n\n" if combined else "") + "\n".join(summaries)
+
+                if not FUNCTION_APP_URL:
+                    raise RuntimeError("FUNCTION_APP_URL manquant")
+                chat_resp = requests.post(
+                    FUNCTION_APP_URL,
+                    json={"message": combined},
+                    timeout=30,
+                )
+                chat_resp.raise_for_status()
+                response = chat_resp.json().get("response", "Aucune réponse du modèle.")
+                await turn_context.send_activity(response)
             except Exception as e:
                 logging.exception("Erreur analyze: %s", e)
                 await turn_context.send_activity(f"❌ Exception analyze: {e}")

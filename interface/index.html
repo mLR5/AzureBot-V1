@@ -37,7 +37,7 @@
   let dl;
   let store;
 
-  async function uploadAndSend(files) {
+  async function uploadAndSend(files, userText) {
     const fileList = Array.from(files || []);
     if (!fileList.length) return;
 
@@ -86,13 +86,13 @@
       type: 'event',
       name: 'files_uploaded',
       from: { id: userID },
-      value: { blobs }
+      value: { blobs, userText }
     }).subscribe({
       next: () => { upStatus.textContent = 'Fichiers envoyés pour analyse.'; },
       error: (e) => { console.error(e); upStatus.textContent = '❌ Envoi event échoué.'; }
     });
 
-    store.dispatch({ type: 'WEB_CHAT/SET_SEND_BOX', payload: { attachments: [] } });
+    store.dispatch({ type: 'WEB_CHAT/SET_SEND_BOX', payload: { text: '', attachments: [] } });
   }
 
   try {
@@ -103,7 +103,7 @@
 
     store = window.WebChat.createStore({}, ({ dispatch }) => next => action => {
       if (action.type === 'WEB_CHAT/SEND_FILES') {
-        uploadAndSend(action.payload.files);
+        uploadAndSend(action.payload.files, action.payload.text);
         return;
       }
       return next(action);
