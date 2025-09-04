@@ -16,18 +16,13 @@ log = logging.getLogger("bot-app")
 APP_ID = os.getenv("MicrosoftAppId")
 APP_PASSWORD = os.getenv("MicrosoftAppPassword")
 
-# Appel texte → ta function “chat” existante
-FUNCTION_APP_URL = os.getenv("FUNCTION_APP_URL")
-
-# AJOUT : Appel analyse → ta function /api/analyze protégée par une function key
-ANALYZE_URL = os.getenv("ANALYZE_URL")
+# Endpoint unique pour le traitement du texte et des fichiers
+PROCESS_INPUT_URL = os.getenv("PROCESS_INPUT_URL")
 
 if not APP_ID or not APP_PASSWORD:
     log.warning("MicrosoftAppId/MicrosoftAppPassword non définis. L’auth Bot échouera.")
-if not FUNCTION_APP_URL:
-    log.warning("FUNCTION_APP_URL non défini. Les appels backend (chat) échoueront.")
-if not ANALYZE_URL:
-    log.warning("ANALYZE_URL non défini. L'analyse de fichiers échouera.")
+if not PROCESS_INPUT_URL:
+    log.warning("PROCESS_INPUT_URL non défini. Le traitement des messages échouera.")
 
 # --- Adapter + gestion d'erreurs globales ---
 adapter_settings = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
@@ -50,67 +45,40 @@ class TeamsSimpleBot(ActivityHandler):
         log.info("Message utilisateur: %s", user_message)
         if turn_context.activity.attachments:
             try:
-                if not ANALYZE_URL:
-                    raise RuntimeError("ANALYZE_URL manquant")
+                if not PROCESS_INPUT_URL:
+                    raise RuntimeError("PROCESS_INPUT_URL manquant")
 
                 token = await turn_context.adapter.get_oauth_access_token()
-                summaries = []
-                for att in turn_context.activity.attachments:
-                    url = getattr(att, "content_url", None)
-                    if not url:
-                        continue
-                    try:
-                        file_resp = requests.get(
-                            url,
-                            headers={"Authorization": f"Bearer {token}"},
-                            timeout=30,
-                        )
-                        if file_resp.status_code == 401:
-                            raise RuntimeError(
-                                "Échec de l'authentification lors du téléchargement de la pièce jointe (401)."
-                            )
-                        file_resp.raise_for_status()
-                        ct = att.content_type or file_resp.headers.get(
-                            "Content-Type", "application/octet-stream"
-                        )
-                        files = {
-                            "file": (
-                                getattr(att, "name", "attachment"),
-                                file_resp.content,
-                                ct,
-                            )
-                        }
-                        a_resp = requests.post(ANALYZE_URL, files=files, timeout=120)
-                        a_resp.raise_for_status()
-                        summaries.append(a_resp.json().get("summary", ""))
-                    except Exception as e:
-                        log.exception(
-                            "Erreur lors de l'analyse d'une pièce jointe: %s", e
-                        )
-                        raise
-
-                if not summaries:
-                    raise RuntimeError("Analyse indisponible")
-
-                combined = f"{user_message}\n\n" + "\n".join(
-                    f"Document {i}: {s}" for i, s in enumerate(summaries, 1)
-                )
-
-                if not FUNCTION_APP_URL:
-                    raise RuntimeError("FUNCTION_APP_URL manquant")
-                resp = requests.post(
-                    FUNCTION_APP_URL,
-                    json={"message": combined},
+                att = turn_context.activity.attachments[0]
+                url = getattr(att, "content_url", None)
+                if not url:
+                    raise RuntimeError("Pièce jointe sans URL")
+                file_resp = requests.get(
+                    url,
+                    headers={"Authorization": f"Bearer {token}"},
                     timeout=30,
                 )
-                resp.raise_for_status()
-                response = resp.json().get("response", "Aucune réponse du modèle.")
+                if file_resp.status_code == 401:
+                    raise RuntimeError(
+                        "Échec de l'authentification lors du téléchargement de la pièce jointe (401)."
+                    )
+                file_resp.raise_for_status()
+                ct = att.content_type or file_resp.headers.get(
+                    "Content-Type", "application/octet-stream"
+                )
+                files = {
+                    "file": (
+                        getattr(att, "name", "attachment"),
+                        file_resp.content,
+                        ct,
+                    )
+                }
+                r = requests.post(PROCESS_INPUT_URL, files=files, timeout=120)
+                r.raise_for_status()
+                await turn_context.send_activity(json.dumps(r.json()))
             except Exception as e:
                 log.exception("Traitement des fichiers échoué: %s", e)
                 await turn_context.send_activity(str(e))
-                return
-
-            await turn_context.send_activity(response)
             return
 
         if not user_message:
@@ -118,17 +86,17 @@ class TeamsSimpleBot(ActivityHandler):
             return
 
         try:
-            if not FUNCTION_APP_URL:
-                raise RuntimeError("FUNCTION_APP_URL manquant")
+            if not PROCESS_INPUT_URL:
+                raise RuntimeError("PROCESS_INPUT_URL manquant")
             resp = requests.post(
-                FUNCTION_APP_URL,
+                PROCESS_INPUT_URL,
                 json={"message": user_message},
                 timeout=30,
             )
             resp.raise_for_status()
             response = resp.json().get("response", "Aucune réponse du modèle.")
         except Exception as e:
-            log.exception("Erreur lors de l'appel backend (chat): %s", e)
+            log.exception("Erreur lors de l'appel backend: %s", e)
             response = f"Erreur backend : {e}"
 
         await turn_context.send_activity(response)
@@ -137,8 +105,7 @@ class TeamsSimpleBot(ActivityHandler):
     async def on_event_activity(self, turn_context: TurnContext):
         """
         Reçoit l'event 'files_uploaded' envoyé par le front (Direct Line),
-        appelle /api/analyze, puis combine les résumés avec le texte utilisateur
-        avant d'interroger l'API chat.
+        puis envoie les fichiers et le texte utilisateur à l'endpoint de traitement.
         """
         if turn_context.activity.name == "files_uploaded":
             payload = turn_context.activity.value or {}
@@ -150,8 +117,8 @@ class TeamsSimpleBot(ActivityHandler):
                 await turn_context.send_activity("Aucun fichier reçu.")
                 return
 
-            if not ANALYZE_URL:
-                await turn_context.send_activity("Configuration manquante: ANALYZE_URL.")
+            if not PROCESS_INPUT_URL:
+                await turn_context.send_activity("Configuration manquante: PROCESS_INPUT_URL.")
                 return
 
             try:
@@ -161,35 +128,17 @@ class TeamsSimpleBot(ActivityHandler):
 
             try:
                 r = requests.post(
-                    ANALYZE_URL,
-                    json={"blobs": blobs, "instruction": instruction},
+                    PROCESS_INPUT_URL,
+                    json={"blobs": blobs, "message": user_text},
                     timeout=120,
                 )
                 r.raise_for_status()
                 data = r.json()
-                results = data.get("results", [])
+                response = data.get("response", "Aucune réponse du modèle.")
             except Exception as e:
-                logging.exception("Erreur analyze: %s", e)
+                logging.exception("Erreur analyse: %s", e)
                 await turn_context.send_activity("Les fichiers ne sont pas pris en charge")
                 return
-
-            combined = f"{user_text}\n\n" + "\n".join(
-                f"Document {i}: {res.get('summary','')}" for i, res in enumerate(results, 1)
-            )
-
-            try:
-                if not FUNCTION_APP_URL:
-                    raise RuntimeError("FUNCTION_APP_URL manquant")
-                resp = requests.post(
-                    FUNCTION_APP_URL,
-                    json={"message": combined},
-                    timeout=30,
-                )
-                resp.raise_for_status()
-                response = resp.json().get("response", "Aucune réponse du modèle.")
-            except Exception as e:
-                log.exception("Erreur lors de l'appel backend (chat): %s", e)
-                response = f"Erreur backend : {e}"
 
             await turn_context.send_activity(response)
             turn_context.turn_state.pop("pending_text", None)
