@@ -49,7 +49,55 @@ class TeamsSimpleBot(ActivityHandler):
         user_message = (turn_context.activity.text or "").strip()
         log.info("Message utilisateur: %s", user_message)
         if turn_context.activity.attachments:
-            turn_context.turn_state["pending_text"] = user_message
+            try:
+                if not ANALYZE_URL:
+                    raise RuntimeError("ANALYZE_URL manquant")
+
+                summaries = []
+                for att in turn_context.activity.attachments:
+                    url = getattr(att, "content_url", None)
+                    if not url:
+                        continue
+                    try:
+                        file_resp = requests.get(url, timeout=30)
+                        file_resp.raise_for_status()
+                        ct = att.content_type or file_resp.headers.get("Content-Type", "application/octet-stream")
+                        files = {
+                            "file": (
+                                getattr(att, "name", "attachment"),
+                                file_resp.content,
+                                ct,
+                            )
+                        }
+                        a_resp = requests.post(ANALYZE_URL, files=files, timeout=120)
+                        a_resp.raise_for_status()
+                        summaries.append(a_resp.json().get("summary", ""))
+                    except Exception as e:
+                        log.exception("Erreur lors de l'analyse d'une pièce jointe: %s", e)
+                        raise
+
+                if not summaries:
+                    raise RuntimeError("Analyse indisponible")
+
+                combined = f"{user_message}\n\n" + "\n".join(
+                    f"Document {i}: {s}" for i, s in enumerate(summaries, 1)
+                )
+
+                if not FUNCTION_APP_URL:
+                    raise RuntimeError("FUNCTION_APP_URL manquant")
+                resp = requests.post(
+                    FUNCTION_APP_URL,
+                    json={"message": combined},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                response = resp.json().get("response", "Aucune réponse du modèle.")
+            except Exception as e:
+                log.exception("Traitement des fichiers échoué: %s", e)
+                await turn_context.send_activity("Les fichiers ne sont pas pris en charge")
+                return
+
+            await turn_context.send_activity(response)
             return
 
         if not user_message:
@@ -109,7 +157,7 @@ class TeamsSimpleBot(ActivityHandler):
                 results = data.get("results", [])
             except Exception as e:
                 logging.exception("Erreur analyze: %s", e)
-                await turn_context.send_activity(f"❌ Exception analyze: {e}")
+                await turn_context.send_activity("Les fichiers ne sont pas pris en charge")
                 return
 
             combined = f"{user_text}\n\n" + "\n".join(
