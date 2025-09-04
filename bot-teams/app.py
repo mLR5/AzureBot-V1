@@ -53,15 +53,26 @@ class TeamsSimpleBot(ActivityHandler):
                 if not ANALYZE_URL:
                     raise RuntimeError("ANALYZE_URL manquant")
 
+                token = await turn_context.adapter.get_oauth_access_token()
                 summaries = []
                 for att in turn_context.activity.attachments:
                     url = getattr(att, "content_url", None)
                     if not url:
                         continue
                     try:
-                        file_resp = requests.get(url, timeout=30)
+                        file_resp = requests.get(
+                            url,
+                            headers={"Authorization": f"Bearer {token}"},
+                            timeout=30,
+                        )
+                        if file_resp.status_code == 401:
+                            raise RuntimeError(
+                                "Échec de l'authentification lors du téléchargement de la pièce jointe (401)."
+                            )
                         file_resp.raise_for_status()
-                        ct = att.content_type or file_resp.headers.get("Content-Type", "application/octet-stream")
+                        ct = att.content_type or file_resp.headers.get(
+                            "Content-Type", "application/octet-stream"
+                        )
                         files = {
                             "file": (
                                 getattr(att, "name", "attachment"),
@@ -73,7 +84,9 @@ class TeamsSimpleBot(ActivityHandler):
                         a_resp.raise_for_status()
                         summaries.append(a_resp.json().get("summary", ""))
                     except Exception as e:
-                        log.exception("Erreur lors de l'analyse d'une pièce jointe: %s", e)
+                        log.exception(
+                            "Erreur lors de l'analyse d'une pièce jointe: %s", e
+                        )
                         raise
 
                 if not summaries:
@@ -94,7 +107,7 @@ class TeamsSimpleBot(ActivityHandler):
                 response = resp.json().get("response", "Aucune réponse du modèle.")
             except Exception as e:
                 log.exception("Traitement des fichiers échoué: %s", e)
-                await turn_context.send_activity("Les fichiers ne sont pas pris en charge")
+                await turn_context.send_activity(str(e))
                 return
 
             await turn_context.send_activity(response)
