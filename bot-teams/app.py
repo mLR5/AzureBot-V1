@@ -53,21 +53,22 @@ class TeamsSimpleBot(ActivityHandler):
             await turn_context.send_activity("Aucun texte reçu.")
             return
 
-        try:
-            if not FUNCTION_APP_URL:
-                raise RuntimeError("FUNCTION_APP_URL manquant")
-            resp = requests.post(
-                FUNCTION_APP_URL,
-                json={"message": user_message},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            response = resp.json().get("response", "Aucune réponse du modèle.")
-        except Exception as e:
-            log.exception("Erreur lors de l'appel backend (chat): %s", e)
-            response = f"Erreur backend : {e}"
+        if user_message:
+            try:
+                if not FUNCTION_APP_URL:
+                    raise RuntimeError("FUNCTION_APP_URL manquant")
+                resp = requests.post(
+                    FUNCTION_APP_URL,
+                    json={"message": user_message},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                response = resp.json().get("response", "Aucune réponse du modèle.")
+            except Exception as e:
+                log.exception("Erreur lors de l'appel backend (chat): %s", e)
+                response = f"Erreur backend : {e}"
 
-        await turn_context.send_activity(response)
+            await turn_context.send_activity(response)
 
     # AJOUT : handler des events (fichiers envoyés depuis l'interface web)
     async def on_event_activity(self, turn_context: TurnContext):
