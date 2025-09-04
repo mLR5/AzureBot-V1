@@ -5,3 +5,4 @@ requests
 azure-identity
 azure-storage-blob
 azure-ai-documentintelligence
+azure-search-documents

@@ -4,6 +4,7 @@ from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.documentintelligence import DocumentIntelligenceClient
+from azure.search.documents import SearchClient
 from openai import AzureOpenAI
 
 # ----- Storage (lecture privée via Managed Identity) -----
@@ -24,6 +25,22 @@ client = AzureOpenAI(
     azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"]
 )
 DEPLOYMENT_NAME = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+
+# ----- Azure AI Search (vector index) -----
+SEARCH_ENDPOINT = os.environ.get("SEARCH_ENDPOINT")
+SEARCH_KEY = os.environ.get("SEARCH_KEY")
+SEARCH_INDEX_NAME = os.environ.get("SEARCH_INDEX_NAME")
+search_client = None
+if SEARCH_ENDPOINT and SEARCH_KEY and SEARCH_INDEX_NAME:
+    search_client = SearchClient(
+        endpoint=SEARCH_ENDPOINT,
+        index_name=SEARCH_INDEX_NAME,
+        credential=AzureKeyCredential(SEARCH_KEY),
+    )
+
+EMBEDDING_DEPLOYMENT = os.environ.get(
+    "AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large"
+)
 
 def _read_blob_to_bytes(blob_url: str) -> bytes:
     # blob_url = https://<sa>.blob.core.windows.net/<container>/<path>
@@ -70,6 +87,38 @@ def _analyze_image(img_bytes: bytes, content_type: str) -> dict:
     resp = client.chat.completions.create(model=DEPLOYMENT_NAME, messages=messages, temperature=0.2)
     return {"type": "image", "text": resp.choices[0].message.content.strip()}
 
+
+def _chunk_text(text: str, size: int = 500):
+    tokens = text.split()
+    for i in range(0, len(tokens), size):
+        yield " ".join(tokens[i : i + size]), i // size
+
+
+def _index_text(blob_url: str, text: str) -> list[str]:
+    if not search_client:
+        return []
+    ids = []
+    for chunk_text, idx in _chunk_text(text):
+        emb = client.embeddings.create(
+            model=EMBEDDING_DEPLOYMENT, input=chunk_text
+        )
+        embedding = emb.data[0].embedding
+        doc_id = base64.urlsafe_b64encode(f"{blob_url}|{idx}".encode()).decode(
+            "utf-8"
+        )
+        search_client.upload_documents(
+            [
+                {
+                    "id": doc_id,
+                    "blob_url": blob_url,
+                    "chunk_text": chunk_text,
+                    "embedding": embedding,
+                }
+            ]
+        )
+        ids.append(doc_id)
+    return ids
+
 def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         body = req.get_json()
@@ -81,10 +130,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             raw = _read_blob_to_bytes(blob_url)
 
             if ct == "application/pdf" or blob_url.lower().endswith(".pdf"):
-                outputs.append(_analyze_pdf(raw))
+                res = _analyze_pdf(raw)
+                res["embedding_ids"] = _index_text(blob_url, res["text"])
+                outputs.append(res)
             elif ct.startswith("image/"):
                 img_res = _analyze_image(raw, ct)
-                outputs.append({**img_res, "summary": img_res.get("text")})
+                img_res["summary"] = img_res.get("text")
+                img_res["embedding_ids"] = _index_text(blob_url, img_res["text"])
+                outputs.append(img_res)
             else:
                 outputs.append({"type": "unknown", "text": "Type non supporté.", "summary": "Type non supporté."})
 
