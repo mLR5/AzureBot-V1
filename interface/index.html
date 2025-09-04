@@ -67,6 +67,7 @@
     const sas = await sasResp.json();
 
     const blobs = [];
+    const userText = store.getState().sendBox.value.trim();
     for (let i = 0; i < sas.uploads.length; i++) {
       const f = fileList[i];
       const u = sas.uploads[i];
@@ -86,7 +87,7 @@
       type: 'event',
       name: 'files_uploaded',
       from: { id: userID },
-      value: { blobs }
+      value: { blobs, userText }
     }).subscribe({
       next: () => { upStatus.textContent = 'Fichiers envoyés pour analyse.'; },
       error: (e) => { console.error(e); upStatus.textContent = '❌ Envoi event échoué.'; }
