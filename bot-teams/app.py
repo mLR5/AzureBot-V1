@@ -82,7 +82,8 @@ class TeamsSimpleBot(ActivityHandler):
         if turn_context.activity.name == "files_uploaded":
             payload = turn_context.activity.value or {}
             blobs = payload.get("blobs", [])  # attendu: [{ blobUrl, contentType }]
-            user_text = payload.get("userText") or turn_context.turn_state.get("pending_text") or ""
+            instruction = payload.get("instruction") or ""
+            user_text = instruction or turn_context.turn_state.get("pending_text") or ""
 
             if not blobs:
                 await turn_context.send_activity("Aucun fichier reçu.")
@@ -98,7 +99,11 @@ class TeamsSimpleBot(ActivityHandler):
                 pass
 
             try:
-                r = requests.post(ANALYZE_URL, json={"blobs": blobs}, timeout=120)
+                r = requests.post(
+                    ANALYZE_URL,
+                    json={"blobs": blobs, "instruction": instruction},
+                    timeout=120,
+                )
                 r.raise_for_status()
                 data = r.json()
                 results = data.get("results", [])
