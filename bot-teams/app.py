@@ -49,6 +49,10 @@ class TeamsSimpleBot(ActivityHandler):
         user_message = (turn_context.activity.text or "").strip()
         log.info("Message utilisateur: %s", user_message)
 
+        if not user_message:
+            await turn_context.send_activity("Aucun texte reçu.")
+            return
+
         try:
             if not FUNCTION_APP_URL:
                 raise RuntimeError("FUNCTION_APP_URL manquant")
