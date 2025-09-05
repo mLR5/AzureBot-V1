@@ -73,53 +73,53 @@ class TeamsSimpleBot(ActivityHandler):
     # AJOUT : handler des events (fichiers envoyés depuis l'interface web)
     async def on_event_activity(self, turn_context: TurnContext):
         """
-        Reçoit l'event 'files_uploaded' envoyé par le front (Direct Line),
-        appelle /api/analyze, et poste le résultat dans la conversation.
+        Reçoit un event (Direct Line). Si `value.blobs` est présent, appelle /api/analyze
+        et poste le résultat dans la conversation.
         """
-        if turn_context.activity.name == "files_uploaded":
-            payload = turn_context.activity.value or {}
-            blobs = payload.get("blobs", [])  # attendu: [{ blobUrl, contentType }]
-            user_message = (payload.get("message") or "").strip()
+        payload = turn_context.activity.value or {}
+        blobs = payload.get("blobs", [])  # attendu: [{ blobUrl, contentType }]
+        user_message = (payload.get("message") or "").strip()
 
-            if not blobs:
-                await turn_context.send_activity("Aucun fichier reçu.")
-                return
+        if not blobs:
+            # Rétroaction pour confirmer que l'event a bien été reçu
+            name = turn_context.activity.name or "event"
+            await turn_context.send_activity(f"Event '{name}' reçu mais aucun fichier fourni.")
+            return
 
-            if not ANALYZE_URL:
-                await turn_context.send_activity("Configuration manquante: ANALYZE_URL.")
-                return
+        if not ANALYZE_URL:
+            await turn_context.send_activity("Configuration manquante: ANALYZE_URL.")
+            return
 
-            # Petit message d'état
-            try:
-                await turn_context.send_activity(f"🔎 Analyse de {len(blobs)} fichier(s) en cours…")
-            except Exception:
-                pass
+        # Petit message d'état
+        try:
+            await turn_context.send_activity(f"🔎 Analyse de {len(blobs)} fichier(s) en cours…")
+        except Exception:
+            pass
 
-            try:
-                req_payload = {"blobs": blobs}
-                if user_message:
-                    req_payload["message"] = user_message
-                r = requests.post(ANALYZE_URL, json=req_payload, timeout=120)
-                if r.ok:
-                    data = r.json()
-                    results = data.get("results", [])
-                    if not results:
-                        await turn_context.send_activity("Aucun résultat.")
-                    else:
-                        for i, res in enumerate(results, 1):
-                            kind = (res.get("type") or "doc")
-                            summary = (res.get("summary") or "")[:2000]  # borne de sécurité
-                            await turn_context.send_activity(f"— Document {i} ({kind}):\n{summary}")
+        try:
+            req_payload = {"blobs": blobs}
+            if user_message:
+                req_payload["message"] = user_message
+            r = requests.post(ANALYZE_URL, json=req_payload, timeout=120)
+            if r.ok:
+                data = r.json()
+                results = data.get("results", [])
+                if not results:
+                    await turn_context.send_activity("Aucun résultat.")
                 else:
-                    # Ajoute du diagnostic minimal pour faciliter le debug côté Function
-                    try:
-                        detail = r.text[:500]
-                    except Exception:
-                        detail = ""
-                    await turn_context.send_activity(f"❌ Erreur analyze {r.status_code}\n{detail}")
-            except Exception as e:
-                logging.exception("Erreur analyze: %s", e)
-                await turn_context.send_activity(f"❌ Exception analyze: {e}")
+                    for i, res in enumerate(results, 1):
+                        kind = (res.get("type") or "doc")
+                        summary = (res.get("summary") or "")[:2000]
+                        await turn_context.send_activity(f"— Document {i} ({kind}):\n{summary}")
+            else:
+                try:
+                    detail = r.text[:500]
+                except Exception:
+                    detail = ""
+                await turn_context.send_activity(f"❌ Erreur analyze {r.status_code}\n{detail}")
+        except Exception as e:
+            logging.exception("Erreur analyze: %s", e)
+            await turn_context.send_activity(f"❌ Exception analyze: {e}")
 
 bot = TeamsSimpleBot()
 
