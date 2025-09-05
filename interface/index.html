@@ -9,25 +9,20 @@
     html,body{height:100%;margin:0;background:#0f172a}
     #wrap{display:flex;flex-direction:column;height:100%}
     header{color:#fff;padding:8px 12px;font:600 14px/1.4 ui-sans-serif}
+    header a{color:#60a5fa;margin-left:12px;text-decoration:none}
     #webchat{flex:1;max-width:900px;margin:0 auto 8px;background:#111827;border-radius:16px}
     .status{color:#94a3b8;font:500 12px/1.4 ui-sans-serif;padding:0 12px 8px}
-    .bar{max-width:900px;margin:8px auto;padding:8px;color:#cbd5e1;font:500 13px ui-sans-serif}
-    .bar button{padding:6px 10px;border-radius:10px;border:0;cursor:pointer}
-    .bar input[type=file]{margin-right:8px}
   </style>
 </head>
 <body>
 <div id="wrap">
-  <header>🧠 AzureBot — interface web</header>
+    <header>🧠 AzureBot — interface web</header>
   <div class="status" id="status">Connexion en cours…</div>
-
-  <!-- Barre d’upload -->
-  <div class="bar">
-    <input id="filepick" type="file" multiple accept="application/pdf,image/*" />
-    <button id="sendFiles">Analyser</button>
-    <span id="upStatus"></span>
+  <div class="status" id="upStatus"></div>
+  <div style="max-width:900px;margin:0 auto 8px;padding:8px 0 0 0;">
+    <label style="color:#cbd5e1;font:500 12px ui-sans-serif;display:block;margin:0 0 6px 0;">Analyser des fichiers (PDF, PNG, JPG, WEBP)</label>
+    <input id="fileInput" type="file" multiple accept=".pdf,image/*" style="color:#cbd5e1" />
   </div>
-
   <div id="webchat" role="main"></div>
 </div>
 
@@ -43,89 +38,125 @@
   // Identifiant user pour tracer les blobs (coté serveur)
   const userID = 'web-' + Math.random().toString(36).slice(2);
 
-  try {
-    // 1) Récupère le token Direct Line
-    const res = await fetch(TOKEN_URL, { method: 'GET' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const { token } = await res.json();
-    status.textContent = 'Connecté à Direct Line.';
+  let dl;
+  let store;
 
-    // 2) Crée Direct Line + rend Web Chat
-    const dl = window.WebChat.createDirectLine({ token });
-    window.WebChat.renderWebChat(
-      {
-        directLine: dl,
-        locale: 'fr-FR',
-        userID,
-        styleOptions: { bubbleBorderRadius: 10, hideUploadButton: true }
-      },
-      document.getElementById('webchat')
-    );
+  async function uploadAndSend(files, userMessage) {
+    const fileList = Array.from(files || []);
+    if (!fileList.length) return;
 
-    // 3) Upload puis event → bot
-    async function uploadAndSend() {
-      const input = document.getElementById('filepick');
-      const files = Array.from(input.files || []);
-      if (!files.length) return;
-
-      // Optionnel : petite validation locale
-      const allowed = ['application/pdf','image/png','image/jpeg','image/jpg','image/webp'];
-      for (const f of files) {
-        if (!allowed.some(a => f.type === a || (a === 'application/pdf' && f.name.toLowerCase().endsWith('.pdf')))) {
-          upStatus.textContent = `Type non supporté: ${f.name}`;
-          return;
-        }
-        if (f.size > 25 * 1024 * 1024) { // 25 Mo max
-          upStatus.textContent = `Fichier trop volumineux (>25 Mo): ${f.name}`;
-          return;
-        }
+    const isPdf = (f) => (f.type === 'application/pdf') || f.name.toLowerCase().endsWith('.pdf');
+    const isImg = (f) => (f.type.startsWith('image/')) || /\.(png|jpg|jpeg|webp)$/i.test(f.name);
+    for (const f of fileList) {
+      if (!(isPdf(f) || isImg(f))) {
+        upStatus.textContent = `Type non supporté: ${f.name}`;
+        console.warn('Unsupported file type', f);
+        return;
       }
+      if (f.size > 25 * 1024 * 1024) {
+        upStatus.textContent = `Fichier trop volumineux (>25 Mo): ${f.name}`;
+        return;
+      }
+    }
 
-      upStatus.textContent = 'Préparation des SAS…';
+    upStatus.textContent = 'Préparation des SAS…';
 
-      // a) Demande des SAS d’upload (User Delegation SAS côté serveur)
+    let sas;
+    try {
       const sasResp = await fetch(SAS_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: userID,
-          files: files.map(f => ({ filename: f.name, contentType: f.type }))
+          files: fileList.map(f => ({ filename: f.name, contentType: f.type }))
         })
       });
-      if (!sasResp.ok) { upStatus.textContent = '❌ Erreur SAS'; return; }
-      const sas = await sasResp.json();
-
-      // b) PUT chaque fichier vers Blob
-      const blobs = [];
-      for (let i = 0; i < sas.uploads.length; i++) {
-        const f = files[i];
-        const u = sas.uploads[i];
-        upStatus.textContent = `Upload ${i+1}/${files.length}…`;
-
-        const put = await fetch(u.putUrl, {
-          method: 'PUT',
-          headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': f.type || 'application/octet-stream' },
-          body: f
-        });
-        if (!put.ok) { upStatus.textContent = `❌ Upload échoué: ${f.name}`; return; }
-
-        // On n’envoie QUE l’URL blob privée (sans SAS de lecture) + contentType
-        blobs.push({ blobUrl: u.blobUrl, contentType: f.type });
+      if (!sasResp.ok) {
+        const detail = await sasResp.text();
+        upStatus.textContent = `❌ Erreur SAS (${sasResp.status})`;
+        console.error('SAS error:', sasResp.status, detail);
+        return;
       }
-
-      // c) Envoi d’un event au bot (il appellera /api/analyze)
-      dl.postActivity({
-        type: 'event',
-        name: 'files_uploaded',
-        from: { id: userID },
-        value: { blobs }   // => [{ blobUrl, contentType }]
-      }).subscribe({
-        next: () => { upStatus.textContent = 'Fichiers envoyés pour analyse.'; },
-        error: (e) => { console.error(e); upStatus.textContent = '❌ Envoi event échoué.'; }
-      });
+      sas = await sasResp.json();
+    } catch (e) {
+      upStatus.textContent = '❌ Exception lors de la requête SAS (voir console)';
+      console.error('SAS exception', e);
+      return;
     }
 
-    document.getElementById('sendFiles').addEventListener('click', uploadAndSend);
+    const blobs = [];
+    for (let i = 0; i < sas.uploads.length; i++) {
+      const f = fileList[i];
+      const u = sas.uploads[i];
+      upStatus.textContent = `Upload ${i+1}/${fileList.length}…`;
+
+      const put = await fetch(u.putUrl, {
+        method: 'PUT',
+        headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': f.type || 'application/octet-stream' },
+        body: f
+      });
+      if (!put.ok) {
+        const detail = await put.text();
+        upStatus.textContent = `❌ Upload échoué: ${f.name}`;
+        console.error('Upload error', put.status, detail);
+        return;
+      }
+
+      blobs.push({ blobUrl: u.blobUrl, contentType: f.type });
+    }
+
+    dl.postActivity({
+      type: 'event',
+      name: 'files_uploaded',
+      from: { id: userID },
+      value: { blobs, message: (userMessage || '').trim() }
+    }).subscribe({
+      next: () => { upStatus.textContent = 'Fichiers envoyés pour analyse.'; },
+      error: (e) => { console.error('postActivity error', e); upStatus.textContent = '❌ Envoi event échoué.'; }
+    });
+
+    store.dispatch({ type: 'WEB_CHAT/SET_SEND_BOX', payload: { attachments: [] } });
+    // Clear the text input now that we sent it alongside files
+    store.dispatch({ type: 'WEB_CHAT/SET_SEND_BOX', payload: { text: '' } });
+  }
+
+  try {
+    const res = await fetch(`${TOKEN_URL}?userId=${encodeURIComponent(userID)}`, { method: 'GET' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const { token } = await res.json();
+    status.textContent = 'Connecté à Direct Line.';
+
+    store = window.WebChat.createStore({}, ({ dispatch, getState }) => next => action => {
+      if (action.type === 'WEB_CHAT/SEND_FILES') {
+        const state = (typeof getState === 'function') ? getState() : {};
+        const userMessage = (state.sendBoxValue || '').trim();
+        uploadAndSend(action.payload.files, userMessage);
+        return; // stop default attachment sending
+      }
+      return next(action);
+    });
+
+    dl = window.WebChat.createDirectLine({ token });
+
+    window.WebChat.renderWebChat(
+      {
+        directLine: dl,
+        locale: 'fr-FR',
+        userID,
+        store,
+        styleOptions: { bubbleBorderRadius: 10, hideUploadButton: true }
+      },
+      document.getElementById('webchat')
+    );
+
+    // Brancher notre input fichier custom pour déclencher l'upload
+    const fileInput = document.getElementById('fileInput');
+    fileInput.addEventListener('change', () => {
+      const state = store.getState ? store.getState() : {};
+      const userMessage = (state.sendBoxValue || '').trim();
+      uploadAndSend(fileInput.files, userMessage);
+      fileInput.value = '';
+    });
 
   } catch (e) {
     console.error(e);

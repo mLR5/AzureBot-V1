@@ -1,0 +1,93 @@
+# .github/workflows/deploy-dev.yml
+name: Deploy AzureBot (dev)
+
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      RESOURCE_GROUP:  ${{ vars.RESOURCE_GROUP }}
+      FUNC_APP_NAME:   ${{ vars.FUNCTION_APP_NAME }}
+      BOT_APP_NAME:    ${{ vars.BOT_APP_NAME }}
+      STORAGE_ACCOUNT: ${{ vars.STORAGE_ACCOUNT }}
+      STATIC_CONTAINER: '\$web'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Azure login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Verify resources exist in RG
+      run: |
+        echo "RG: $RESOURCE_GROUP"
+        az resource show -g "$RESOURCE_GROUP" -n "$FUNC_APP_NAME" --resource-type "Microsoft.Web/sites" >/dev/null
+        az resource show -g "$RESOURCE_GROUP" -n "$BOT_APP_NAME"  --resource-type "Microsoft.Web/sites" >/dev/null
+        az storage account show -g "$RESOURCE_GROUP" -n "$STORAGE_ACCOUNT" >/dev/null
+        echo "Resources found."
+
+    # -------- Function App --------
+    - name: Install Function deps
+      working-directory: function-app
+      run: |
+        pip install -r requirements.txt --target .python_packages/lib/site-packages
+
+    - name: Deploy Function App
+      uses: azure/functions-action@v1
+      with:
+        app-name: ${{ env.FUNC_APP_NAME }}
+        package: function-app
+
+    # -------- Bot Teams (Oryx build côté Azure) --------
+    - name: Ensure Startup Command for Bot
+      run: |
+        az webapp config set \
+          -g "$RESOURCE_GROUP" -n "$BOT_APP_NAME" \
+          --startup-file 'gunicorn --bind=0.0.0.0:$PORT --timeout 600 --worker-class aiohttp.GunicornWebWorker app:app'
+
+    - name: Deploy bot to Web App (let Oryx build)
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.BOT_APP_NAME }}
+        package: bot-teams
+        enable-oryx-build: true
+
+    # -------- Interface Web (Static Website) --------
+    - name: Enable static website (idempotent)
+      run: |
+        az configure --defaults group=$RESOURCE_GROUP
+        az storage blob service-properties update \
+          --account-name ${{ env.STORAGE_ACCOUNT }} \
+          --static-website \
+          --index-document index.html \
+          --404-document 404.html
+
+    # sync
+    - name: Sync static site to $web
+      run: |
+        az storage blob sync \
+          --account-name ${{ env.STORAGE_ACCOUNT }} \
+          --auth-mode login \
+          --source interface \
+          --container ${{ env.STATIC_CONTAINER }} \
+          --delete-destination true
+
+    # desactive cache navigateur
+    - name: Set no-cache on index.html
+      run: |
+        az storage blob update \
+          --account-name ${{ env.STORAGE_ACCOUNT }} \
+          --container-name ${{ env.STATIC_CONTAINER }} \
+          --name index.html \
+          --content-cache-control "no-cache, no-store, must-revalidate" \
+          >/dev/null || true
