@@ -19,10 +19,6 @@
     <header>🧠 AzureBot — interface web</header>
   <div class="status" id="status">Connexion en cours…</div>
   <div class="status" id="upStatus"></div>
-  <div style="max-width:900px;margin:0 auto 8px;padding:8px 0 0 0;">
-    <label style="color:#cbd5e1;font:500 12px ui-sans-serif;display:block;margin:0 0 6px 0;">Analyser des fichiers (PDF, PNG, JPG, WEBP)</label>
-    <input id="fileInput" type="file" multiple accept=".pdf,image/*" style="color:#cbd5e1" />
-  </div>
   <div id="webchat" role="main"></div>
 </div>
 
@@ -144,19 +140,16 @@
         locale: 'fr-FR',
         userID,
         store,
-        styleOptions: { bubbleBorderRadius: 10, hideUploadButton: true }
+        // Branche le bouton d'upload natif de Web Chat sur notre pipeline SAS → Blob → event
+        sendFiles: async (files) => {
+          const state = store.getState ? store.getState() : {};
+          const userMessage = (state.sendBoxValue || '').trim();
+          await uploadAndSend(files, userMessage);
+        },
+        styleOptions: { bubbleBorderRadius: 10 }
       },
       document.getElementById('webchat')
     );
-
-    // Brancher notre input fichier custom pour déclencher l'upload
-    const fileInput = document.getElementById('fileInput');
-    fileInput.addEventListener('change', () => {
-      const state = store.getState ? store.getState() : {};
-      const userMessage = (state.sendBoxValue || '').trim();
-      uploadAndSend(fileInput.files, userMessage);
-      fileInput.value = '';
-    });
 
   } catch (e) {
     console.error(e);
