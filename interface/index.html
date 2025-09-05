@@ -19,6 +19,10 @@
     <header>🧠 AzureBot — interface web</header>
   <div class="status" id="status">Connexion en cours…</div>
   <div class="status" id="upStatus"></div>
+  <div style="max-width:900px;margin:0 auto 8px;padding:8px 0 0 0;">
+    <label style="color:#cbd5e1;font:500 12px ui-sans-serif;display:block;margin:0 0 6px 0;">Analyser des fichiers (PDF, PNG, JPG, WEBP)</label>
+    <input id="fileInput" type="file" multiple accept=".pdf,image/*" style="color:#cbd5e1" />
+  </div>
   <div id="webchat" role="main"></div>
 </div>
 
@@ -41,10 +45,12 @@
     const fileList = Array.from(files || []);
     if (!fileList.length) return;
 
-    const allowed = ['application/pdf','image/png','image/jpeg','image/jpg','image/webp'];
+    const isPdf = (f) => (f.type === 'application/pdf') || f.name.toLowerCase().endsWith('.pdf');
+    const isImg = (f) => (f.type.startsWith('image/')) || /\.(png|jpg|jpeg|webp)$/i.test(f.name);
     for (const f of fileList) {
-      if (!allowed.some(a => f.type === a || (a === 'application/pdf' && f.name.toLowerCase().endsWith('.pdf')))) {
+      if (!(isPdf(f) || isImg(f))) {
         upStatus.textContent = `Type non supporté: ${f.name}`;
+        console.warn('Unsupported file type', f);
         return;
       }
       if (f.size > 25 * 1024 * 1024) {
@@ -55,16 +61,28 @@
 
     upStatus.textContent = 'Préparation des SAS…';
 
-    const sasResp = await fetch(SAS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId: userID,
-        files: fileList.map(f => ({ filename: f.name, contentType: f.type }))
-      })
-    });
-    if (!sasResp.ok) { upStatus.textContent = '❌ Erreur SAS'; return; }
-    const sas = await sasResp.json();
+    let sas;
+    try {
+      const sasResp = await fetch(SAS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: userID,
+          files: fileList.map(f => ({ filename: f.name, contentType: f.type }))
+        })
+      });
+      if (!sasResp.ok) {
+        const detail = await sasResp.text();
+        upStatus.textContent = `❌ Erreur SAS (${sasResp.status})`;
+        console.error('SAS error:', sasResp.status, detail);
+        return;
+      }
+      sas = await sasResp.json();
+    } catch (e) {
+      upStatus.textContent = '❌ Exception lors de la requête SAS (voir console)';
+      console.error('SAS exception', e);
+      return;
+    }
 
     const blobs = [];
     for (let i = 0; i < sas.uploads.length; i++) {
@@ -77,7 +95,12 @@
         headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': f.type || 'application/octet-stream' },
         body: f
       });
-      if (!put.ok) { upStatus.textContent = `❌ Upload échoué: ${f.name}`; return; }
+      if (!put.ok) {
+        const detail = await put.text();
+        upStatus.textContent = `❌ Upload échoué: ${f.name}`;
+        console.error('Upload error', put.status, detail);
+        return;
+      }
 
       blobs.push({ blobUrl: u.blobUrl, contentType: f.type });
     }
@@ -89,7 +112,7 @@
       value: { blobs, message: (userMessage || '').trim() }
     }).subscribe({
       next: () => { upStatus.textContent = 'Fichiers envoyés pour analyse.'; },
-      error: (e) => { console.error(e); upStatus.textContent = '❌ Envoi event échoué.'; }
+      error: (e) => { console.error('postActivity error', e); upStatus.textContent = '❌ Envoi event échoué.'; }
     });
 
     store.dispatch({ type: 'WEB_CHAT/SET_SEND_BOX', payload: { attachments: [] } });
@@ -108,7 +131,7 @@
         const state = (typeof getState === 'function') ? getState() : {};
         const userMessage = (state.sendBoxValue || '').trim();
         uploadAndSend(action.payload.files, userMessage);
-        return;
+        return; // stop default attachment sending
       }
       return next(action);
     });
@@ -121,10 +144,19 @@
         locale: 'fr-FR',
         userID,
         store,
-        styleOptions: { bubbleBorderRadius: 10 }
+        styleOptions: { bubbleBorderRadius: 10, hideUploadButton: true }
       },
       document.getElementById('webchat')
     );
+
+    // Brancher notre input fichier custom pour déclencher l'upload
+    const fileInput = document.getElementById('fileInput');
+    fileInput.addEventListener('change', () => {
+      const state = store.getState ? store.getState() : {};
+      const userMessage = (state.sendBoxValue || '').trim();
+      uploadAndSend(fileInput.files, userMessage);
+      fileInput.value = '';
+    });
 
   } catch (e) {
     console.error(e);
