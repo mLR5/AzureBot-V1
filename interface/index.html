@@ -37,7 +37,7 @@
   let dl;
   let store;
 
-  async function uploadAndSend(files) {
+  async function uploadAndSend(files, userMessage) {
     const fileList = Array.from(files || []);
     if (!fileList.length) return;
 
@@ -86,13 +86,15 @@
       type: 'event',
       name: 'files_uploaded',
       from: { id: userID },
-      value: { blobs }
+      value: { blobs, message: (userMessage || '').trim() }
     }).subscribe({
       next: () => { upStatus.textContent = 'Fichiers envoyés pour analyse.'; },
       error: (e) => { console.error(e); upStatus.textContent = '❌ Envoi event échoué.'; }
     });
 
     store.dispatch({ type: 'WEB_CHAT/SET_SEND_BOX', payload: { attachments: [] } });
+    // Clear the text input now that we sent it alongside files
+    store.dispatch({ type: 'WEB_CHAT/SET_SEND_BOX', payload: { text: '' } });
   }
 
   try {
@@ -101,9 +103,11 @@
     const { token } = await res.json();
     status.textContent = 'Connecté à Direct Line.';
 
-    store = window.WebChat.createStore({}, ({ dispatch }) => next => action => {
+    store = window.WebChat.createStore({}, ({ dispatch, getState }) => next => action => {
       if (action.type === 'WEB_CHAT/SEND_FILES') {
-        uploadAndSend(action.payload.files);
+        const state = (typeof getState === 'function') ? getState() : {};
+        const userMessage = (state.sendBoxValue || '').trim();
+        uploadAndSend(action.payload.files, userMessage);
         return;
       }
       return next(action);
