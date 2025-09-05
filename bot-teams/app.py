@@ -49,6 +49,11 @@ class TeamsSimpleBot(ActivityHandler):
         user_message = (turn_context.activity.text or "").strip()
         log.info("Message utilisateur: %s", user_message)
 
+        # Évite d'appeler le backend si le message est vide (cas: envoi de fichiers sans texte)
+        if not user_message:
+            log.info("Message vide reçu — ignoré pour éviter une erreur 400 côté function.")
+            return
+
         try:
             if not FUNCTION_APP_URL:
                 raise RuntimeError("FUNCTION_APP_URL manquant")
@@ -106,7 +111,12 @@ class TeamsSimpleBot(ActivityHandler):
                             summary = (res.get("summary") or "")[:2000]  # borne de sécurité
                             await turn_context.send_activity(f"— Document {i} ({kind}):\n{summary}")
                 else:
-                    await turn_context.send_activity(f"❌ Erreur analyze {r.status_code}")
+                    # Ajoute du diagnostic minimal pour faciliter le debug côté Function
+                    try:
+                        detail = r.text[:500]
+                    except Exception:
+                        detail = ""
+                    await turn_context.send_activity(f"❌ Erreur analyze {r.status_code}\n{detail}")
             except Exception as e:
                 logging.exception("Erreur analyze: %s", e)
                 await turn_context.send_activity(f"❌ Exception analyze: {e}")
